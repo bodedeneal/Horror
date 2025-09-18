@@ -46,6 +46,11 @@
   <div id="jumpscare">👹</div>
   <script>
     // ---------------- GAME CONFIG ----------------
+    // Map legend:
+    // "1" - normal wall (red)
+    // "0" - empty
+    // "2" - white wall
+    // "U" - rising wall (green, goes up in front of player)
     const map = [
       "111111111111",
       "100000000001",
@@ -54,7 +59,7 @@
       "101100101101",
       "100000000001",
       "101111111101",
-      "100000000001",
+      "100222200001", // <-- white area (2)
       "111111111111"
     ];
     const TILE_SIZE = 1.0;
@@ -75,20 +80,44 @@
     let jumpscare = false;
 
     // ------------- WALL IN FRONT OF PLAYER -------------
-    // The wall will be placed one tile ahead of the player, and rendered as a normal wall
-    function updateWallInFront() {
+    // "U" will be a wall that rises up in front of the player
+    let risingWall = {
+      active: false,
+      x: null,
+      y: null,
+      height: 0, // 0 = hidden, 1 = fully up
+      risingSpeed: 0.06
+    };
+
+    function updateRisingWall() {
+      // Find tile in front of player
       let fx = PLAYER.x + Math.cos(PLAYER.dir);
       let fy = PLAYER.y + Math.sin(PLAYER.dir);
       let wallX = Math.floor(fx);
       let wallY = Math.floor(fy);
-      // Place a wall if not already there and inside the map
+
+      // Only place rising wall if inside map bounds, not already a wall, and not on white wall
       if (
         wallX > 0 && wallX < MAP_W-1 &&
         wallY > 0 && wallY < MAP_H-1 &&
-        map[wallY][wallX] !== '1'
+        map[wallY][wallX] === '0'
       ) {
-        // Update map to place wall
-        map[wallY] = map[wallY].substr(0, wallX) + '1' + map[wallY].substr(wallX+1);
+        risingWall.x = wallX;
+        risingWall.y = wallY;
+        risingWall.active = true;
+      } else {
+        risingWall.active = false;
+        risingWall.x = null;
+        risingWall.y = null;
+        risingWall.height = 0;
+      }
+    }
+
+    // Animate rising wall
+    function animateRisingWall() {
+      if (risingWall.active && risingWall.height < 1) {
+        risingWall.height += risingWall.risingSpeed;
+        if (risingWall.height > 1) risingWall.height = 1;
       }
     }
 
@@ -126,15 +155,35 @@
 
     function castRay(x, y, angle) {
       let sin = Math.sin(angle), cos = Math.cos(angle);
-      let dist = 0, hit = false;
+      let dist = 0, hit = false, type = '0';
       let step = 0.01;
       while(!hit && dist < 20) {
         let nx = x + cos*dist, ny = y + sin*dist;
         let mx = Math.floor(nx), my = Math.floor(ny);
-        if(mx<0||my<0||mx>=MAP_W||my>=MAP_H||map[my][mx]==='1') hit=true;
+
+        // Rising wall check
+        if (
+          risingWall.active &&
+          mx === risingWall.x &&
+          my === risingWall.y &&
+          risingWall.height > 0.01
+        ) {
+          hit = true;
+          type = 'U';
+        }
+        // Normal wall/white wall
+        if(mx<0||my<0||mx>=MAP_W||my>=MAP_H) {
+          hit=true; type='1';
+        }
+        else if(map[my][mx]==='1') {
+          hit=true; type='1';
+        }
+        else if(map[my][mx]==='2') {
+          hit=true; type='2';
+        }
         dist += step;
       }
-      return dist;
+      return {dist, type};
     }
 
     function render() {
@@ -146,12 +195,25 @@
       // Draw 3D walls
       for(let i=0; i<NUM_RAYS; i++) {
         let rayAngle = PLAYER.dir - FOV/2 + FOV*i/NUM_RAYS;
-        let dist = castRay(PLAYER.x, PLAYER.y, rayAngle);
+        let {dist, type} = castRay(PLAYER.x, PLAYER.y, rayAngle);
         dist *= Math.cos(rayAngle-PLAYER.dir);
 
-        let wallHeight = canvas.height/(dist+0.1);
-        let shade = Math.max(0, 180-dist*12);
-        ctx.fillStyle = `rgb(${shade},0,0)`;
+        let wallHeight;
+        if(type === 'U') {
+          wallHeight = canvas.height/(dist+0.1) * risingWall.height; // animate wall height
+        } else {
+          wallHeight = canvas.height/(dist+0.1);
+        }
+
+        if(type === '1') {
+          let shade = Math.max(0, 180-dist*12);
+          ctx.fillStyle = `rgb(${shade},0,0)`;
+        } else if(type === '2') {
+          ctx.fillStyle = "#fff";
+        } else if(type === 'U') {
+          ctx.fillStyle = "limegreen";
+        }
+
         ctx.fillRect(
           i*canvas.width/NUM_RAYS,
           canvas.height/2-wallHeight/2 + pitchOffset,
@@ -185,8 +247,9 @@
 
     // ---------------- GAME LOGIC ----------------
     function update() {
-      updateWallInFront(); // Place a wall in front of player
-      
+      updateRisingWall();
+      animateRisingWall();
+
       // Movement
       let moveX=0, moveY=0;
       if(keys["KeyW"]) { moveX+=Math.cos(PLAYER.dir)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir)*PLAYER.speed; }
@@ -194,8 +257,17 @@
       if(keys["KeyA"]) { moveX+=Math.cos(PLAYER.dir-Math.PI/2)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir-Math.PI/2)*PLAYER.speed; }
       if(keys["KeyD"]) { moveX+=Math.cos(PLAYER.dir+Math.PI/2)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir+Math.PI/2)*PLAYER.speed; }
       let nx = PLAYER.x+moveX, ny = PLAYER.y+moveY;
-      if(map[Math.floor(PLAYER.y)][Math.floor(nx)]!=='1') PLAYER.x=nx;
-      if(map[Math.floor(ny)][Math.floor(PLAYER.x)]!=='1') PLAYER.y=ny;
+
+      // Block movement through normal walls, white walls, rising wall
+      let mx = Math.floor(nx), my = Math.floor(ny);
+      let block = false;
+      if(map[my] && map[my][mx] === '1') block = true;
+      if(map[my] && map[my][mx] === '2') block = true;
+      if(risingWall.active && mx === risingWall.x && my === risingWall.y && risingWall.height > 0.8) block = true;
+      if(!block) {
+        PLAYER.x = nx;
+        PLAYER.y = ny;
+      }
 
       // Monster AI: move toward player slowly
       if(scaryMonster.active) {
