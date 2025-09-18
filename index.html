@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Horror Game</title>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #000;
+    }
+    #gameCanvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: #111;
+    }
+    #hud {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      color: #fff;
+      font-family: monospace;
+      z-index: 10;
+    }
+    #jumpscare {
+      position: fixed;
+      left: 0; top: 0;
+      width: 100vw; height: 100vh;
+      background: rgba(0,0,0,0.95);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999;
+      font-size: 5vw;
+      color: red;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="hud">WASD to move, Mouse to look</div>
+  <div id="jumpscare">👹</div>
+  <script>
+    // Simple 3D horror game using raycasting (Wolfenstein style)
+    // ---------------- GAME CONFIG ----------------
+    const map = [
+      "111111111111",
+      "100000000001",
+      "101110111101",
+      "100100100001",
+      "101100101101",
+      "100000000001",
+      "101111111101",
+      "100000000001",
+      "111111111111"
+    ];
+    const TILE_SIZE = 1.0;
+    const MAP_W = map[0].length;
+    const MAP_H = map.length;
+    const FOV = Math.PI/3;
+    const NUM_RAYS = 160;
+    const PLAYER = {
+      x: 2, y: 2,
+      dir: 0,
+      fov: FOV,
+      speed: 0.08,
+      rotSpeed: 0.045
+    };
+    let scaryMonster = {x: 8, y: 6, active: true};
+    let jumpscare = false;
+
+    // ---------------- INPUT ----------------
+    let keys = {};
+    document.addEventListener('keydown', e => keys[e.code]=true);
+    document.addEventListener('keyup', e => keys[e.code]=false);
+    let mouseCaptured = false;
+    document.body.onclick = () => {
+      gameCanvas.requestPointerLock();
+    };
+    document.addEventListener('pointerlockchange', () => {
+      mouseCaptured = document.pointerLockElement === gameCanvas;
+    });
+    document.addEventListener('mousemove', e => {
+      if(mouseCaptured) PLAYER.dir += e.movementX * -0.002;
+    });
+
+    // ---------------- RAYCASTING RENDER ----------------
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    function castRay(x, y, angle) {
+      let sin = Math.sin(angle), cos = Math.cos(angle);
+      let dist = 0, hit = false;
+      let step = 0.01;
+      while(!hit && dist < 20) {
+        let nx = x + cos*dist, ny = y + sin*dist;
+        let mx = Math.floor(nx), my = Math.floor(ny);
+        if(mx<0||my<0||mx>=MAP_W||my>=MAP_H||map[my][mx]==='1') hit=true;
+        dist += step;
+      }
+      return dist;
+    }
+
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Draw 3D walls
+      for(let i=0; i<NUM_RAYS; i++) {
+        let rayAngle = PLAYER.dir - FOV/2 + FOV*i/NUM_RAYS;
+        let dist = castRay(PLAYER.x, PLAYER.y, rayAngle);
+        // Fix fisheye
+        dist *= Math.cos(rayAngle-PLAYER.dir);
+        let wallHeight = canvas.height/(dist+0.1);
+        let shade = Math.max(0, 180-dist*12);
+        ctx.fillStyle = `rgb(${shade},0,0)`;
+        ctx.fillRect(
+          i*canvas.width/NUM_RAYS,
+          canvas.height/2-wallHeight/2,
+          canvas.width/NUM_RAYS+1,
+          wallHeight
+        );
+      }
+
+      // Monster (simple billboard)
+      if(scaryMonster.active) {
+        let dx = scaryMonster.x-PLAYER.x, dy = scaryMonster.y-PLAYER.y;
+        let dist = Math.sqrt(dx*dx+dy*dy);
+        let angToMonster = Math.atan2(dy,dx);
+        let relAngle = angToMonster-PLAYER.dir;
+        if(dist<20 && Math.abs(relAngle)<FOV/2) {
+          let px = (relAngle+FOV/2)/FOV*canvas.width;
+          let size = Math.min(220, 500/(dist+0.1));
+          ctx.save();
+          ctx.globalAlpha = Math.max(0.1, 0.8-dist/10);
+          ctx.drawImage(monsterImage, px-size/2, canvas.height/2-size/2, size, size);
+          ctx.restore();
+        }
+      }
+
+      // Floor and ceiling
+      ctx.fillStyle = "#222";
+      ctx.fillRect(0,canvas.height/2,canvas.width,canvas.height/2);
+      ctx.fillStyle = "#070707";
+      ctx.fillRect(0,0,canvas.width,canvas.height/2);
+    }
+
+    // ---------------- GAME LOGIC ----------------
+    function update() {
+      // Movement
+      let moveX=0, moveY=0;
+      if(keys["KeyW"]) { moveX+=Math.cos(PLAYER.dir)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir)*PLAYER.speed; }
+      if(keys["KeyS"]) { moveX-=Math.cos(PLAYER.dir)*PLAYER.speed; moveY-=Math.sin(PLAYER.dir)*PLAYER.speed; }
+      if(keys["KeyA"]) { moveX+=Math.cos(PLAYER.dir-Math.PI/2)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir-Math.PI/2)*PLAYER.speed; }
+      if(keys["KeyD"]) { moveX+=Math.cos(PLAYER.dir+Math.PI/2)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir+Math.PI/2)*PLAYER.speed; }
+      let nx = PLAYER.x+moveX, ny = PLAYER.y+moveY;
+      if(map[Math.floor(PLAYER.y)][Math.floor(nx)]!=='1') PLAYER.x=nx;
+      if(map[Math.floor(ny)][Math.floor(PLAYER.x)]!=='1') PLAYER.y=ny;
+
+      // Monster AI: move toward player slowly
+      if(scaryMonster.active) {
+        let dx = PLAYER.x-scaryMonster.x, dy = PLAYER.y-scaryMonster.y;
+        let dist = Math.sqrt(dx*dx+dy*dy);
+        if(dist>0.4) {
+          scaryMonster.x += dx/dist*0.015;
+          scaryMonster.y += dy/dist*0.015;
+        } else {
+          // Jumpscare!
+          scaryMonster.active = false;
+          jumpscare = true;
+          document.getElementById('jumpscare').style.opacity = 1;
+          setTimeout(()=>{document.getElementById('jumpscare').style.opacity=0; jumpscare=false;},1500);
+        }
+      }
+    }
+
+    // ---------------- MONSTER SPRITE ----------------
+    const monsterImage = new Image();
+    monsterImage.src = "data:image/svg+xml;base64," +
+      btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
+        <ellipse cx="100" cy="110" rx="55" ry="80" fill="darkred" stroke="black" stroke-width="8"/>
+        <circle cx="70" cy="85" r="13" fill="white" stroke="black" stroke-width="4"/>
+        <circle cx="130" cy="85" r="13" fill="white" stroke="black" stroke-width="4"/>
+        <circle cx="70" cy="85" r="6" fill="red"/>
+        <circle cx="130" cy="85" r="6" fill="red"/>
+        <ellipse cx="100" cy="150" rx="21" ry="13" fill="black"/>
+        <ellipse cx="100" cy="155" rx="17" ry="4" fill="red"/>
+      </svg>`);
+
+    // ---------------- MAIN LOOP ----------------
+    function gameLoop() {
+      if(!jumpscare) {
+        update();
+        render();
+      }
+      requestAnimationFrame(gameLoop);
+    }
+    gameLoop();
+  </script>
+</body>
+</html>
