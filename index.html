@@ -15,6 +15,7 @@
       width: 100vw;
       height: 100vh;
       background: #111;
+      cursor: crosshair;
     }
     #hud {
       position: absolute;
@@ -41,10 +42,9 @@
 </head>
 <body>
   <canvas id="gameCanvas"></canvas>
-  <div id="hud">WASD to move, Mouse to look</div>
+  <div id="hud">WASD to move, Mouse to look. Hold Shift and move mouse up/down to look up/down.</div>
   <div id="jumpscare">👹</div>
   <script>
-    // Simple 3D horror game using raycasting (Wolfenstein style)
     // ---------------- GAME CONFIG ----------------
     const map = [
       "111111111111",
@@ -67,21 +67,29 @@
       dir: 0,
       fov: FOV,
       speed: 0.08,
-      rotSpeed: 0.045
+      rotSpeed: 0.045,
+      pitch: 0, // -1 (look up) to 1 (look down)
+      pitchSpeed: 0.03
     };
     let scaryMonster = {x: 8, y: 6, active: true};
     let jumpscare = false;
 
-    // ---------------- NEW BLOCK CONFIG ----------------
-    // Block in front of player
-    let blockInFront = {x: null, y: null}; // will be set below
-
-    function updateBlockInFront() {
-      // Find the tile directly in front of the player (one tile ahead)
+    // ------------- WALL IN FRONT OF PLAYER -------------
+    // The wall will be placed one tile ahead of the player, and rendered as a normal wall
+    function updateWallInFront() {
       let fx = PLAYER.x + Math.cos(PLAYER.dir);
       let fy = PLAYER.y + Math.sin(PLAYER.dir);
-      blockInFront.x = Math.floor(fx);
-      blockInFront.y = Math.floor(fy);
+      let wallX = Math.floor(fx);
+      let wallY = Math.floor(fy);
+      // Place a wall if not already there and inside the map
+      if (
+        wallX > 0 && wallX < MAP_W-1 &&
+        wallY > 0 && wallY < MAP_H-1 &&
+        map[wallY][wallX] !== '1'
+      ) {
+        // Update map to place wall
+        map[wallY] = map[wallY].substr(0, wallX) + '1' + map[wallY].substr(wallX+1);
+      }
     }
 
     // ---------------- INPUT ----------------
@@ -96,7 +104,14 @@
       mouseCaptured = document.pointerLockElement === gameCanvas;
     });
     document.addEventListener('mousemove', e => {
-      if(mouseCaptured) PLAYER.dir += e.movementX * -0.002;
+      if(mouseCaptured) {
+        PLAYER.dir += e.movementX * -0.002;
+        // Look up/down if Shift is held
+        if(keys["ShiftLeft"] || keys["ShiftRight"]) {
+          PLAYER.pitch += e.movementY * -0.002;
+          PLAYER.pitch = Math.max(-0.75, Math.min(0.75, PLAYER.pitch)); // Clamp
+        }
+      }
     });
 
     // ---------------- RAYCASTING RENDER ----------------
@@ -109,51 +124,37 @@
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
 
-    function castRay(x, y, angle, blockCheck=false) {
+    function castRay(x, y, angle) {
       let sin = Math.sin(angle), cos = Math.cos(angle);
-      let dist = 0, hit = false, blockHit = false;
+      let dist = 0, hit = false;
       let step = 0.01;
       while(!hit && dist < 20) {
         let nx = x + cos*dist, ny = y + sin*dist;
         let mx = Math.floor(nx), my = Math.floor(ny);
-
-        // Check for wall
         if(mx<0||my<0||mx>=MAP_W||my>=MAP_H||map[my][mx]==='1') hit=true;
-
-        // Check for block in front (custom block)
-        if(blockCheck && mx === blockInFront.x && my === blockInFront.y) {
-          blockHit = true;
-          hit = true;
-        }
-
         dist += step;
       }
-      return {dist, blockHit};
+      return dist;
     }
 
     function render() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Draw 3D walls and block in front
+      // Floor and ceiling pitch offset
+      let pitchOffset = PLAYER.pitch * canvas.height * 0.34;
+
+      // Draw 3D walls
       for(let i=0; i<NUM_RAYS; i++) {
         let rayAngle = PLAYER.dir - FOV/2 + FOV*i/NUM_RAYS;
-        // Cast ray, check for block
-        let {dist, blockHit} = castRay(PLAYER.x, PLAYER.y, rayAngle, true);
-        // Fix fisheye
+        let dist = castRay(PLAYER.x, PLAYER.y, rayAngle);
         dist *= Math.cos(rayAngle-PLAYER.dir);
 
         let wallHeight = canvas.height/(dist+0.1);
         let shade = Math.max(0, 180-dist*12);
-
-        if(blockHit) {
-          // Draw the block in front - different color
-          ctx.fillStyle = `rgb(50,200,50)`;
-        } else {
-          ctx.fillStyle = `rgb(${shade},0,0)`;
-        }
+        ctx.fillStyle = `rgb(${shade},0,0)`;
         ctx.fillRect(
           i*canvas.width/NUM_RAYS,
-          canvas.height/2-wallHeight/2,
+          canvas.height/2-wallHeight/2 + pitchOffset,
           canvas.width/NUM_RAYS+1,
           wallHeight
         );
@@ -170,22 +171,22 @@
           let size = Math.min(220, 500/(dist+0.1));
           ctx.save();
           ctx.globalAlpha = Math.max(0.1, 0.8-dist/10);
-          ctx.drawImage(monsterImage, px-size/2, canvas.height/2-size/2, size, size);
+          ctx.drawImage(monsterImage, px-size/2, canvas.height/2-size/2 + pitchOffset, size, size);
           ctx.restore();
         }
       }
 
       // Floor and ceiling
       ctx.fillStyle = "#222";
-      ctx.fillRect(0,canvas.height/2,canvas.width,canvas.height/2);
+      ctx.fillRect(0,canvas.height/2+pitchOffset,canvas.width,canvas.height/2-pitchOffset);
       ctx.fillStyle = "#070707";
-      ctx.fillRect(0,0,canvas.width,canvas.height/2);
+      ctx.fillRect(0,0,canvas.width,canvas.height/2+pitchOffset);
     }
 
     // ---------------- GAME LOGIC ----------------
     function update() {
-      updateBlockInFront(); // Update block position
-
+      updateWallInFront(); // Place a wall in front of player
+      
       // Movement
       let moveX=0, moveY=0;
       if(keys["KeyW"]) { moveX+=Math.cos(PLAYER.dir)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir)*PLAYER.speed; }
@@ -193,15 +194,8 @@
       if(keys["KeyA"]) { moveX+=Math.cos(PLAYER.dir-Math.PI/2)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir-Math.PI/2)*PLAYER.speed; }
       if(keys["KeyD"]) { moveX+=Math.cos(PLAYER.dir+Math.PI/2)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir+Math.PI/2)*PLAYER.speed; }
       let nx = PLAYER.x+moveX, ny = PLAYER.y+moveY;
-
-      // Block collision: Prevent walking through the block in front
-      let blockX = blockInFront.x, blockY = blockInFront.y;
-      if(Math.floor(nx)==blockX && Math.floor(ny)==blockY) {
-        // Don't move into the block
-      } else {
-        if(map[Math.floor(PLAYER.y)][Math.floor(nx)]!=='1') PLAYER.x=nx;
-        if(map[Math.floor(ny)][Math.floor(PLAYER.x)]!=='1') PLAYER.y=ny;
-      }
+      if(map[Math.floor(PLAYER.y)][Math.floor(nx)]!=='1') PLAYER.x=nx;
+      if(map[Math.floor(ny)][Math.floor(PLAYER.x)]!=='1') PLAYER.y=ny;
 
       // Monster AI: move toward player slowly
       if(scaryMonster.active) {
