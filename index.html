@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>3D Horror Game</title>
+  <title>3D Horror Maze Game</title>
   <style>
     body, html {
       margin: 0;
@@ -10,12 +10,21 @@
       overflow: hidden;
       background: #000;
     }
+    #bgStars {
+      position: fixed;
+      left: 0; top: 0;
+      width: 100vw; height: 100vh;
+      pointer-events: none;
+      z-index: 0;
+    }
     #gameCanvas {
       display: block;
       width: 100vw;
       height: 100vh;
-      background: #111;
-      cursor: crosshair;
+      background: transparent;
+      position: fixed;
+      left: 0; top: 0;
+      z-index: 1;
     }
     #hud {
       position: absolute;
@@ -24,6 +33,7 @@
       color: #fff;
       font-family: monospace;
       z-index: 10;
+      text-shadow: 0 0 10px #000;
     }
     #deathscreen {
       position: fixed;
@@ -51,24 +61,50 @@
       100% { transform: scale(1) translateY(0);}
     }
   </style>
-  <!-- Creepster font for extra horror vibes -->
   <link href="https://fonts.googleapis.com/css2?family=Creepster&display=swap" rel="stylesheet">
 </head>
 <body>
+  <canvas id="bgStars"></canvas>
   <canvas id="gameCanvas"></canvas>
-  <div id="hud">WASD to move, Mouse to look, Shift+Mouse up/down to look up/down.</div>
+  <div id="hud">WASD to move, Mouse to look, Shift+Mouse up/down to look up/down.<br>Try to avoid the monster!</div>
   <div id="deathscreen">
     <div class="monster">🕷️</div>
     <div>You have been caught.<br>The monster grabs you and you die!</div>
     <div style="font-size:2vw;margin-top:2em;">Refresh to try again.</div>
   </div>
   <script>
+    // ----- SOLID STAR BACKGROUND -----
+    const bgStars = document.getElementById('bgStars');
+    const bgCtx = bgStars.getContext('2d');
+    function resizeBgStars() {
+      bgStars.width = window.innerWidth;
+      bgStars.height = window.innerHeight;
+      drawStars();
+    }
+    window.addEventListener('resize', resizeBgStars);
+
+    function drawStars() {
+      const w = bgStars.width, h = bgStars.height;
+      bgCtx.clearRect(0,0,w,h);
+      // Draw 180 stars
+      for(let i=0;i<180;i++){
+        let x = Math.random()*w, y = Math.random()*h;
+        let r = Math.random()*1.7+0.3;
+        bgCtx.beginPath();
+        bgCtx.arc(x,y,r,0,Math.PI*2);
+        bgCtx.fillStyle = `rgba(255,255,255,${Math.random()*0.8+0.2})`;
+        bgCtx.fill();
+      }
+    }
+    resizeBgStars();
+
     // ---------------- GAME CONFIG ----------------
     // Map legend:
     // "1" - normal wall (red)
     // "0" - empty
     // "2" - white wall
     // "U" - rising wall (green, goes up in front of player)
+    // This maze has thick walls (width = player width)
     const map = [
       "111111111111",
       "100000000001",
@@ -80,7 +116,7 @@
       "100222200001", // <-- white area (2)
       "111111111111"
     ];
-    const TILE_SIZE = 1.0;
+    const TILE_SIZE = 1.0; // Player radius will be 0.5 so wall is as thick as player
     const MAP_W = map[0].length;
     const MAP_H = map.length;
     const FOV = Math.PI/3;
@@ -93,6 +129,7 @@
       rotSpeed: 0.045,
       pitch: 0, // -1 (look up) to 1 (look down)
       pitchSpeed: 0.03,
+      radius: 0.5, // player radius for thick wall collision
       alive: true
     };
 
@@ -267,6 +304,25 @@
       ctx.fillRect(0,0,canvas.width,canvas.height/2+pitchOffset);
     }
 
+    // ----------- THICK WALL COLLISION -----------
+    function wallAt(x, y) {
+      let mx = Math.floor(x), my = Math.floor(y);
+      if(mx<0||my<0||mx>=MAP_W||my>=MAP_H) return '1';
+      return map[my][mx];
+    }
+    function blockMovement(nx, ny) {
+      // Check for thick wall collision around player radius
+      for(let angle=0; angle<Math.PI*2; angle+=Math.PI/4){
+        let px = nx + Math.cos(angle)*PLAYER.radius*0.98;
+        let py = ny + Math.sin(angle)*PLAYER.radius*0.98;
+        let wallType = wallAt(px, py);
+        if(wallType==='1' || wallType==='2') return true;
+        // Rising wall
+        if(risingWall.active && Math.floor(px)===risingWall.x && Math.floor(py)===risingWall.y && risingWall.height>0.8) return true;
+      }
+      return false;
+    }
+
     // ---------------- GAME LOGIC ----------------
     function update() {
       if (!PLAYER.alive) return;
@@ -281,12 +337,7 @@
       if(keys["KeyD"]) { moveX+=Math.cos(PLAYER.dir+Math.PI/2)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir+Math.PI/2)*PLAYER.speed; }
       let nx = PLAYER.x+moveX, ny = PLAYER.y+moveY;
 
-      let mx = Math.floor(nx), my = Math.floor(ny);
-      let block = false;
-      if(map[my] && map[my][mx] === '1') block = true;
-      if(map[my] && map[my][mx] === '2') block = true;
-      if(risingWall.active && mx === risingWall.x && my === risingWall.y && risingWall.height > 0.8) block = true;
-      if(!block) {
+      if(!blockMovement(nx, ny)) {
         PLAYER.x = nx;
         PLAYER.y = ny;
       }
@@ -295,10 +346,14 @@
       if(monster.active && !monster.grabbing) {
         let dx = PLAYER.x-monster.x, dy = PLAYER.y-monster.y;
         let dist = Math.sqrt(dx*dx+dy*dy);
-        if(dist > 0.32) {
-          monster.x += dx/dist*monster.speed;
-          monster.y += dy/dist*monster.speed;
-        } else {
+        // Monster also collides with thick walls
+        let mx = monster.x + dx/dist*monster.speed;
+        let my = monster.y + dy/dist*monster.speed;
+        if(!blockMovement(mx, my)) {
+          monster.x = mx;
+          monster.y = my;
+        }
+        if(dist < PLAYER.radius+0.09) {
           // Initiate grab sequence!
           monster.grabbing = true;
           monster.grabProgress = 0;
@@ -321,7 +376,6 @@
       const ds = document.getElementById('deathscreen');
       ds.style.opacity = 1;
       ds.style.pointerEvents = 'auto';
-      // Optional: play sound, shake, etc.
     }
 
     // ---------------- MONSTER SPRITE ----------------
