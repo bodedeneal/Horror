@@ -25,25 +25,43 @@
       font-family: monospace;
       z-index: 10;
     }
-    #jumpscare {
+    #deathscreen {
       position: fixed;
       left: 0; top: 0;
       width: 100vw; height: 100vh;
-      background: rgba(0,0,0,0.95);
+      background: rgba(0,0,0,0.98);
       display: flex; align-items: center; justify-content: center;
       z-index: 9999;
       font-size: 5vw;
       color: red;
       opacity: 0;
       pointer-events: none;
-      transition: opacity 0.3s;
+      transition: opacity 0.5s;
+      flex-direction: column;
+      font-family: 'Creepster', 'Arial Black', sans-serif;
+      text-shadow: 4px 4px 10px #000, 0 0 40px #d00;
+    }
+    #deathscreen .monster {
+      font-size: 10vw; margin-bottom: 1em;
+      animation: grab 1s cubic-bezier(.72,.11,.77,1.55);
+    }
+    @keyframes grab {
+      0% { transform: scale(0) translateY(300px);}
+      50% { transform: scale(1.2) translateY(-10px);}
+      100% { transform: scale(1) translateY(0);}
     }
   </style>
+  <!-- Creepster font for extra horror vibes -->
+  <link href="https://fonts.googleapis.com/css2?family=Creepster&display=swap" rel="stylesheet">
 </head>
 <body>
   <canvas id="gameCanvas"></canvas>
-  <div id="hud">WASD to move, Mouse to look. Hold Shift and move mouse up/down to look up/down.</div>
-  <div id="jumpscare">👹</div>
+  <div id="hud">WASD to move, Mouse to look, Shift+Mouse up/down to look up/down.</div>
+  <div id="deathscreen">
+    <div class="monster">🕷️</div>
+    <div>You have been caught.<br>The monster grabs you and you die!</div>
+    <div style="font-size:2vw;margin-top:2em;">Refresh to try again.</div>
+  </div>
   <script>
     // ---------------- GAME CONFIG ----------------
     // Map legend:
@@ -74,13 +92,20 @@
       speed: 0.08,
       rotSpeed: 0.045,
       pitch: 0, // -1 (look up) to 1 (look down)
-      pitchSpeed: 0.03
+      pitchSpeed: 0.03,
+      alive: true
     };
-    let scaryMonster = {x: 8, y: 6, active: true};
-    let jumpscare = false;
 
-    // ------------- WALL IN FRONT OF PLAYER -------------
-    // "U" will be a wall that rises up in front of the player
+    // Monster: 3D horror version, follows and kills player
+    let monster = {
+      x: 8, y: 6,
+      speed: 0.02,
+      active: true,
+      grabbing: false,
+      grabProgress: 0 // 0 to 1 for grab animation
+    };
+
+    // Rising wall (green)
     let risingWall = {
       active: false,
       x: null,
@@ -90,13 +115,10 @@
     };
 
     function updateRisingWall() {
-      // Find tile in front of player
       let fx = PLAYER.x + Math.cos(PLAYER.dir);
       let fy = PLAYER.y + Math.sin(PLAYER.dir);
       let wallX = Math.floor(fx);
       let wallY = Math.floor(fy);
-
-      // Only place rising wall if inside map bounds, not already a wall, and not on white wall
       if (
         wallX > 0 && wallX < MAP_W-1 &&
         wallY > 0 && wallY < MAP_H-1 &&
@@ -112,8 +134,6 @@
         risingWall.height = 0;
       }
     }
-
-    // Animate rising wall
     function animateRisingWall() {
       if (risingWall.active && risingWall.height < 1) {
         risingWall.height += risingWall.risingSpeed;
@@ -133,12 +153,11 @@
       mouseCaptured = document.pointerLockElement === gameCanvas;
     });
     document.addEventListener('mousemove', e => {
-      if(mouseCaptured) {
+      if(mouseCaptured && PLAYER.alive) {
         PLAYER.dir += e.movementX * -0.002;
-        // Look up/down if Shift is held
         if(keys["ShiftLeft"] || keys["ShiftRight"]) {
           PLAYER.pitch += e.movementY * -0.002;
-          PLAYER.pitch = Math.max(-0.75, Math.min(0.75, PLAYER.pitch)); // Clamp
+          PLAYER.pitch = Math.max(-0.75, Math.min(0.75, PLAYER.pitch));
         }
       }
     });
@@ -161,7 +180,6 @@
         let nx = x + cos*dist, ny = y + sin*dist;
         let mx = Math.floor(nx), my = Math.floor(ny);
 
-        // Rising wall check
         if (
           risingWall.active &&
           mx === risingWall.x &&
@@ -171,7 +189,6 @@
           hit = true;
           type = 'U';
         }
-        // Normal wall/white wall
         if(mx<0||my<0||mx>=MAP_W||my>=MAP_H) {
           hit=true; type='1';
         }
@@ -189,7 +206,6 @@
     function render() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Floor and ceiling pitch offset
       let pitchOffset = PLAYER.pitch * canvas.height * 0.34;
 
       // Draw 3D walls
@@ -200,7 +216,7 @@
 
         let wallHeight;
         if(type === 'U') {
-          wallHeight = canvas.height/(dist+0.1) * risingWall.height; // animate wall height
+          wallHeight = canvas.height/(dist+0.1) * risingWall.height;
         } else {
           wallHeight = canvas.height/(dist+0.1);
         }
@@ -222,17 +238,23 @@
         );
       }
 
-      // Monster (simple billboard)
-      if(scaryMonster.active) {
-        let dx = scaryMonster.x-PLAYER.x, dy = scaryMonster.y-PLAYER.y;
+      // Monster: 3D billboard, grows if grabbing
+      if(monster.active) {
+        let dx = monster.x-PLAYER.x, dy = monster.y-PLAYER.y;
         let dist = Math.sqrt(dx*dx+dy*dy);
         let angToMonster = Math.atan2(dy,dx);
         let relAngle = angToMonster-PLAYER.dir;
         if(dist<20 && Math.abs(relAngle)<FOV/2) {
           let px = (relAngle+FOV/2)/FOV*canvas.width;
-          let size = Math.min(220, 500/(dist+0.1));
+          let size;
+          if(monster.grabbing) {
+            // Animate monster growing during grab
+            size = Math.min(canvas.height, 300/(dist+0.1) + monster.grabProgress*canvas.height*0.8);
+          } else {
+            size = Math.min(220, 500/(dist+0.1));
+          }
           ctx.save();
-          ctx.globalAlpha = Math.max(0.1, 0.8-dist/10);
+          ctx.globalAlpha = monster.grabbing ? 1 : Math.max(0.1, 0.8-dist/10);
           ctx.drawImage(monsterImage, px-size/2, canvas.height/2-size/2 + pitchOffset, size, size);
           ctx.restore();
         }
@@ -247,6 +269,7 @@
 
     // ---------------- GAME LOGIC ----------------
     function update() {
+      if (!PLAYER.alive) return;
       updateRisingWall();
       animateRisingWall();
 
@@ -258,7 +281,6 @@
       if(keys["KeyD"]) { moveX+=Math.cos(PLAYER.dir+Math.PI/2)*PLAYER.speed; moveY+=Math.sin(PLAYER.dir+Math.PI/2)*PLAYER.speed; }
       let nx = PLAYER.x+moveX, ny = PLAYER.y+moveY;
 
-      // Block movement through normal walls, white walls, rising wall
       let mx = Math.floor(nx), my = Math.floor(ny);
       let block = false;
       if(map[my] && map[my][mx] === '1') block = true;
@@ -269,42 +291,60 @@
         PLAYER.y = ny;
       }
 
-      // Monster AI: move toward player slowly
-      if(scaryMonster.active) {
-        let dx = PLAYER.x-scaryMonster.x, dy = PLAYER.y-scaryMonster.y;
+      // Monster AI: move toward player, grab and kill
+      if(monster.active && !monster.grabbing) {
+        let dx = PLAYER.x-monster.x, dy = PLAYER.y-monster.y;
         let dist = Math.sqrt(dx*dx+dy*dy);
-        if(dist>0.4) {
-          scaryMonster.x += dx/dist*0.015;
-          scaryMonster.y += dy/dist*0.015;
+        if(dist > 0.32) {
+          monster.x += dx/dist*monster.speed;
+          monster.y += dy/dist*monster.speed;
         } else {
-          // Jumpscare!
-          scaryMonster.active = false;
-          jumpscare = true;
-          document.getElementById('jumpscare').style.opacity = 1;
-          setTimeout(()=>{document.getElementById('jumpscare').style.opacity=0; jumpscare=false;},1500);
+          // Initiate grab sequence!
+          monster.grabbing = true;
+          monster.grabProgress = 0;
         }
       }
+
+      // Grab/kill animation
+      if (monster.grabbing) {
+        monster.grabProgress += 0.025;
+        if (monster.grabProgress >= 1) {
+          monster.grabProgress = 1;
+          killPlayer();
+        }
+      }
+    }
+
+    function killPlayer() {
+      PLAYER.alive = false;
+      // Show death screen
+      const ds = document.getElementById('deathscreen');
+      ds.style.opacity = 1;
+      ds.style.pointerEvents = 'auto';
+      // Optional: play sound, shake, etc.
     }
 
     // ---------------- MONSTER SPRITE ----------------
     const monsterImage = new Image();
     monsterImage.src = "data:image/svg+xml;base64," +
       btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
-        <ellipse cx="100" cy="110" rx="55" ry="80" fill="darkred" stroke="black" stroke-width="8"/>
-        <circle cx="70" cy="85" r="13" fill="white" stroke="black" stroke-width="4"/>
-        <circle cx="130" cy="85" r="13" fill="white" stroke="black" stroke-width="4"/>
-        <circle cx="70" cy="85" r="6" fill="red"/>
-        <circle cx="130" cy="85" r="6" fill="red"/>
-        <ellipse cx="100" cy="150" rx="21" ry="13" fill="black"/>
-        <ellipse cx="100" cy="155" rx="17" ry="4" fill="red"/>
+        <ellipse cx="100" cy="110" rx="55" ry="80" fill="#222" stroke="black" stroke-width="8"/>
+        <ellipse cx="100" cy="105" rx="45" ry="75" fill="black" stroke="limegreen" stroke-width="8"/>
+        <ellipse cx="100" cy="165" rx="31" ry="8" fill="limegreen" stroke="black" stroke-width="2"/>
+        <ellipse cx="100" cy="155" rx="17" ry="3" fill="red"/>
+        <circle cx="80" cy="90" r="14" fill="white" stroke="black" stroke-width="4"/>
+        <circle cx="120" cy="90" r="14" fill="white" stroke="black" stroke-width="4"/>
+        <ellipse cx="80" cy="90" rx="7" ry="10" fill="red"/>
+        <ellipse cx="120" cy="90" rx="7" ry="10" fill="red"/>
+        <ellipse cx="100" cy="120" rx="37" ry="8" fill="black"/>
+        <ellipse cx="100" cy="126" rx="25" ry="4" fill="#222"/>
+        <ellipse cx="100" cy="135" rx="17" ry="5" fill="limegreen"/>
       </svg>`);
 
     // ---------------- MAIN LOOP ----------------
     function gameLoop() {
-      if(!jumpscare) {
-        update();
-        render();
-      }
+      update();
+      render();
       requestAnimationFrame(gameLoop);
     }
     gameLoop();
